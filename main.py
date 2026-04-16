@@ -216,7 +216,8 @@ class MainWindow(QMainWindow):
         
         # Draw grid pattern for visibility
         painter = QPainter(self.camera.pixmap)
-        painter.setPen(QPen(QColor("#555870"), 1, Qt.PenStyle.DotLine))
+        pen = QPen(QColor("#555870"), 1, Qt.PenStyle.DotLine)
+        painter.setPen(pen)
         for i in range(0, 800, 50):
             painter.drawLine(i, 0, i, 600)
         for j in range(0, 600, 50):
@@ -308,7 +309,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, "crop_border"):
             self.scene.removeItem(self.crop_border)
         self.crop_border = QGraphicsRectItem(0, 0, w, h)
-        self.crop_border.setPen(QPen(QColor("#e94560"), 2, Qt.PenStyle.DashLine))
+        pen = QPen(QColor("#e94560"), 2, Qt.PenStyle.DashLine)
+        pen.setCosmetic(True)
+        self.crop_border.setPen(pen)
         self.crop_border.setBrush(QBrush(QColor(0, 0, 0, 0)))
         self.crop_border.setZValue(9999)
         self.crop_border.setTransform(ct.h_to_qt(self.camera.H))
