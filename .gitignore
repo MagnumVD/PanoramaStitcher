@@ -1,0 +1,8 @@
+# Ignore all images
+*.png
+*.jpg
+*.jpeg
+
+# All python caches
+*__pycache__/
+*.pyc
