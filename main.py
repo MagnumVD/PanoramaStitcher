@@ -664,7 +664,11 @@ class MainWindow(QMainWindow):
         self.status.showMessage("Stitching at full resolution...")
         QApplication.processEvents()
 
-        canvas = np.zeros((self.camera.pixmap.height(), self.camera.pixmap.width(), 4), dtype=np.uint8)
+        w = self.camera.pixmap.width()
+        h = self.camera.pixmap.height()
+
+        # premultiplied float32 canvas, range 0-255
+        canvas = np.zeros((h, w, 4), dtype=np.float32)
 
         for entry in self.images[::-1]:  # reverse so top of list = top layer
             img = ib.load_image_rgba(entry.path)
@@ -673,41 +677,48 @@ class MainWindow(QMainWindow):
             disp_w = entry.pixmap.width()
             disp_h = entry.pixmap.height()
 
-            # entry.H is in display coords; compose with S that maps orig -> display
-            # so H_full = entry.H @ S maps original pixel coords -> canvas coords
             S = np.diag([disp_w / orig_w, disp_h / orig_h, 1.0])
             view = np.linalg.inv(self.camera.H)
             H_full = view @ entry.H @ S
 
+            # premultiply RGB by alpha before warp to avoid dark edge fringing
+            img_f = img.astype(np.float32)
+            img_f[:, :, :3] *= img_f[:, :, 3:4] / 255.0
+
             warped = cv2.warpPerspective(
-                img, H_full,
-                (self.camera.pixmap.width(), self.camera.pixmap.height()),
+                img_f, H_full, (w, h),
                 flags=cv2.INTER_LANCZOS4
             )
 
-            # "over" alpha composite
-            src_a = warped[:, :, 3:4].astype(np.float32) / 255.0
-            dst_a = canvas[:, :, 3:4].astype(np.float32) / 255.0
+            # "over" composite in premultiplied space, no un-premultiply needed
+            src_a = warped[:, :, 3:4] / 255.0
+            dst_a = canvas[:, :, 3:4] / 255.0
             out_a = src_a + dst_a * (1.0 - src_a)
 
-            for c in range(3):
-                num = (warped[:, :, c] * src_a[:, :, 0]
-                       + canvas[:, :, c] * dst_a[:, :, 0] * (1.0 - src_a[:, :, 0]))
-                canvas[:, :, c] = np.where(
-                    out_a[:, :, 0] > 0, num / out_a[:, :, 0], 0
-                ).astype(np.uint8)
-            canvas[:, :, 3] = (out_a[:, :, 0] * 255).astype(np.uint8)
+            canvas[:, :, :3] = warped[:, :, :3] + canvas[:, :, :3] * (1.0 - src_a)
+            canvas[:, :, 3:4] = out_a * 255.0
+
+        # un-premultiply once at the end before saving
+        alpha = canvas[:, :, 3:4] / 255.0
+        rgb = np.divide(
+            canvas[:, :, :3], alpha,
+            out=np.zeros_like(canvas[:, :, :3]),
+            where=alpha[:, :, 0:1] > 0
+        )
+        result = np.clip(
+            np.concatenate([rgb, canvas[:, :, 3:4]], axis=2), 0, 255
+        ).astype(np.uint8)
 
         save_path, _ = QFileDialog.getSaveFileName(
             self, "Save Panorama", "panorama.png",
             "PNG (*.png);;JPEG (*.jpg *.jpeg)"
         )
         if save_path:
-            out_bgra = cv2.cvtColor(canvas, cv2.COLOR_RGBA2BGRA)
             if save_path.lower().endswith((".jpg", ".jpeg")):
-                out_bgr = cv2.cvtColor(canvas, cv2.COLOR_RGBA2BGR)
+                out_bgr = cv2.cvtColor(result, cv2.COLOR_RGBA2BGR)
                 cv2.imwrite(save_path, out_bgr, [cv2.IMWRITE_JPEG_QUALITY, 95])
             else:
+                out_bgra = cv2.cvtColor(result, cv2.COLOR_RGBA2BGRA)
                 cv2.imwrite(save_path, out_bgra)
             self.status.showMessage(f"Saved: {save_path}", 6000)
 
