@@ -1,2 +1,4 @@
-PyQt6
-Pillow
+PyQt6 
+opencv-python 
+numpy 
+pillow
