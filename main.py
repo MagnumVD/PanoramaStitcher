@@ -98,7 +98,7 @@ class CanvasView(QGraphicsView):
         elif key == Qt.Key.Key_C:
             # toggle corner-pin on the selected image (not camera)
             e = mw.selected_entry
-            if e and e is not mw.camera and hasattr(e, 'scene_item'):
+            if e and hasattr(e, 'scene_item'):
                 e.scene_item.toggle_corner_pin()
                 mw._update_corner_pin_button()
         else:
@@ -604,16 +604,15 @@ class MainWindow(QMainWindow):
 
     def _toggle_corner_pin(self):
         e = self.selected_entry
-        if e and e is not self.camera:
+        if e and hasattr(e, 'scene_item'):
             e.scene_item.toggle_corner_pin()
             self._update_corner_pin_button()
 
     def _update_corner_pin_button(self):
         e = self.selected_entry
-        # button only active for non-camera images
-        is_image = e and e is not self.camera
-        self.btn_corner_pin.setEnabled(bool(is_image))
-        active = bool(is_image and e.scene_item._corner_pin_mode)
+        has_item = e and hasattr(e, 'scene_item') and e.scene_item is not None
+        self.btn_corner_pin.setEnabled(bool(has_item))
+        active = bool(has_item and e.scene_item._corner_pin_mode)
         self.btn_corner_pin.setChecked(active)
 
     def _sync_spinboxes_from_H(self, H):
