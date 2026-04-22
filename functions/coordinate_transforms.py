@@ -36,3 +36,13 @@ def decompose_H(H):
     scale = float(math.sqrt(H[0, 0] **2 + H[1, 0]** 2))
     rot = float(math.degrees(math.atan2(H[1, 0], H[0, 0])))
     return tx, ty, scale, rot
+
+
+# applies homography H to 2D points (N,2) and returns transformed points (N,2)
+def apply_H(H, pts):
+    pts = np.asarray(pts)
+    ones = np.ones((pts.shape[0], 1))
+    pts_h = np.hstack([pts, ones])
+    out = (H @ pts_h.T).T
+    out /= out[:, 2:3]
+    return out[:, :2]

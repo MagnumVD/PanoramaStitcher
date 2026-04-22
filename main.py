@@ -79,6 +79,8 @@ class CanvasView(QGraphicsView):
 
     def keyPressEvent(self, event):
         key = event.key()
+        mw = self.main_window
+
         if self.tools.active_tool:
             if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 self.tools.finish(commit=True)
@@ -86,12 +88,19 @@ class CanvasView(QGraphicsView):
             if key == Qt.Key.Key_Escape:
                 self.tools.finish(commit=False)
                 return
+
         if key == Qt.Key.Key_G:
             self.tools.start("move")
         elif key == Qt.Key.Key_R:
             self.tools.start("rotate")
         elif key == Qt.Key.Key_S:
             self.tools.start("scale")
+        elif key == Qt.Key.Key_C:
+            # toggle corner-pin on the selected image (not camera)
+            e = mw.selected_entry
+            if e and e is not mw.camera and hasattr(e, 'scene_item'):
+                e.scene_item.toggle_corner_pin()
+                mw._update_corner_pin_button()
         else:
             super().keyPressEvent(event)
 
@@ -101,6 +110,17 @@ class CanvasView(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mousePressEvent(self, event):
+        mw = self.main_window
+
+        # If any image is in corner pin mode only allow handle clicks
+        for img in mw.images:
+            if hasattr(img, "scene_item") and img.scene_item._corner_pin_mode:
+                item = self.itemAt(event.pos())
+
+                # allow only CornerHandle
+                if not isinstance(item, ib.CornerHandle):
+                    return  # ignore everything else
+
         if self.tools.active_tool:
             if event.button() == Qt.MouseButton.LeftButton:
                 self.tools.finish(commit=True)
@@ -111,7 +131,7 @@ class CanvasView(QGraphicsView):
 
         item = self.itemAt(event.pos())
 
-        # clicked empty space → select camera
+        # If clicked on empty space, select camera
         if item is None:
             self.main_window._select_camera()
             self.main_window.selected_entry = self.main_window.camera
@@ -348,9 +368,16 @@ class MainWindow(QMainWindow):
 
         vbox.addWidget(self._section_label("Transform"))
 
-        hint = QLabel("(G) move  (R) rotate  (S) scale\nEnter=confirm  Esc=cancel")
+        hint = QLabel("(C) toggle corner pin\n\n(G) move  (R) rotate  (S) scale\nEnter=confirm  Esc=cancel")
         hint.setObjectName("hintLabel")
         vbox.addWidget(hint)
+
+        # corner-pin toggle button (mirrors the C key)
+        self.btn_corner_pin = QPushButton("Corner Pin")
+        self.btn_corner_pin.setObjectName("cornerPinBtn")
+        self.btn_corner_pin.setCheckable(True)
+        self.btn_corner_pin.clicked.connect(self._toggle_corner_pin)
+        vbox.addWidget(self.btn_corner_pin)
 
         form_host = QWidget()
         form = QFormLayout(form_host)
@@ -406,6 +433,7 @@ class MainWindow(QMainWindow):
         s.setValue(value)
         return s
 
+
     def _add_images(self):
         paths, _ = QFileDialog.getOpenFileNames(
             self, "Select Images", "",
@@ -427,10 +455,15 @@ class MainWindow(QMainWindow):
         if row < 0 or row >= len(self.images):
             return
         entry = self.images.pop(row)
+        # clean up handles before removing item
+        entry.scene_item.disable_corner_pin()
+        for h in entry.scene_item._handles:
+            self.scene.removeItem(h)
         self.scene.removeItem(entry.scene_item)
         self.img_list.takeItem(row)
         self.selected_entry = None
         self._clear_spinboxes()
+        self._update_corner_pin_button()
 
     def _on_canvas_size_changed(self):
         # Create new pixmap with grid
@@ -502,12 +535,17 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'crop_border'):
                 self.crop_border.setTransform(ct.h_to_qt(entry.H))
             self._apply_all_transforms()
+        # sync handles when H changes from drag
+        if hasattr(entry, 'scene_item') and entry.scene_item:
+            entry.scene_item.sync_handles()
         self._sync_spinboxes_from_H(entry.H)
 
     def _select(self, entry, list_row=None):
         self.selected_entry = entry
 
         for img in self.images:
+            if img.scene_item._corner_pin_mode:
+                img.scene_item.disable_corner_pin()
             img.scene_item.setOpacity(0.45 if img is not entry else 1.0)
 
         self.camera.scene_item.setOpacity(0.45 if entry is not self.camera else 1.0)
@@ -518,6 +556,7 @@ class MainWindow(QMainWindow):
             self.img_list.blockSignals(False)
 
         self._sync_spinboxes_from_H(entry.H)
+        self._update_corner_pin_button()
         self.canvas.setFocus()
 
     def _select_camera(self):
@@ -531,6 +570,21 @@ class MainWindow(QMainWindow):
 
         # Update spinboxes
         self._sync_spinboxes_from_H(self.camera.H)
+        self._update_corner_pin_button()
+
+    def _toggle_corner_pin(self):
+        e = self.selected_entry
+        if e and e is not self.camera:
+            e.scene_item.toggle_corner_pin()
+            self._update_corner_pin_button()
+
+    def _update_corner_pin_button(self):
+        e = self.selected_entry
+        # button only active for non-camera images
+        is_image = e and e is not self.camera
+        self.btn_corner_pin.setEnabled(bool(is_image))
+        active = bool(is_image and e.scene_item._corner_pin_mode)
+        self.btn_corner_pin.setChecked(active)
 
     def _sync_spinboxes_from_H(self, H):
         tx, ty, scale, rot = ct.decompose_H(H)
@@ -542,7 +596,7 @@ class MainWindow(QMainWindow):
         self._updating_ui = False
 
     def _on_spinbox_changed(self):
-        if self._updating_ui:
+        if self._updating_ui or not self.selected_entry:
             return
         # rebuilds as similarity H - clears any perspective from auto-align
         H = ct.build_similarity_H(
@@ -559,6 +613,7 @@ class MainWindow(QMainWindow):
 
     def _apply_H_to_item(self, entry):
         entry.scene_item.setTransform(ct.h_to_qt(entry.H))
+        entry.scene_item.sync_handles()
         # Also update crop border
         if entry is self.camera and hasattr(self, 'crop_border'):
             self.crop_border.setTransform(ct.h_to_qt(entry.H))
@@ -573,6 +628,7 @@ class MainWindow(QMainWindow):
         # Apply combined transform to other images
         for e in self.images:
             e.scene_item.setTransform(ct.h_to_qt(e.H))
+            e.scene_item.sync_handles()
 
     def _reset_transform(self):
         if not self.selected_entry:
@@ -802,6 +858,26 @@ class MainWindow(QMainWindow):
                 background: #1e4a5e;
                 border-color: #7dd3e8;
                 color: #fff;
+            }
+            QPushButton#cornerPinBtn {
+                background: #1c2e1c;
+                border: 1px solid #2a452a;
+                color: #7de87d;
+            }
+            QPushButton#cornerPinBtn:hover {
+                background: #223a22;
+                border-color: #7de87d;
+                color: #fff;
+            }
+            QPushButton#cornerPinBtn:checked {
+                background: #2a4a2a;
+                border-color: #ffcc00;
+                color: #ffcc00;
+            }
+            QPushButton#cornerPinBtn:disabled {
+                background: #14141f;
+                border-color: #21213a;
+                color: #333350;
             }
             QDoubleSpinBox, QSpinBox {
                 background: #14141f;
