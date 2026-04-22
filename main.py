@@ -162,6 +162,24 @@ class ToolController:
         )
         self._start_H = self.entry.H.copy()
 
+    def _visual_center(self, H):
+        # get the 4 corners of the image in world space
+        w = self.entry.pixmap.width()
+        h = self.entry.pixmap.height()
+        corners = np.array([
+            [0, 0, 1],
+            [w, 0, 1],
+            [w, h, 1],
+            [0, h, 1],
+        ], dtype=np.float64)
+        projected = (H @ corners.T).T
+        # perspective divide
+        projected /= projected[:, 2:3]
+        # average of the 4 corners
+        wx = projected[:, 0].mean()
+        wy = projected[:, 1].mean()
+        return wx, wy
+
     def update(self, mouse_event):
         if not self.active_tool or not self.entry:
             return False
@@ -171,34 +189,46 @@ class ToolController:
         H0 = self._start_H
 
         if self.active_tool == "move":
-            H = H0.copy()
-            H[0, 2] += delta.x()
-            H[1, 2] += delta.y()
-            self.entry.H = H
+            # translate in world space - pre-multiply so perspective is untouched
+            T = np.array([
+                [1, 0, delta.x()],
+                [0, 1, delta.y()],
+                [0, 0, 1]
+            ], dtype=np.float64)
+            self.entry.H = T @ H0
 
         elif self.active_tool == "rotate":
-            # rotate in image-local space around image center, then apply existing H
+            # rotate in world space around the object's current visual center
             angle_rad = math.radians(delta.x() * 0.3)
             c, s = math.cos(angle_rad), math.sin(angle_rad)
-            cx = self.entry.pixmap.width() / 2
-            cy = self.entry.pixmap.height() / 2
+
+            # find visual center in world space to rotate around
+            wx, wy = self._visual_center(H0)
+
+            # build rotation around that world point
             R = np.array([
-                [c, -s, cx * (1 - c) + cy * s],
-                [s,  c, cy * (1 - c) - cx * s],
+                [c, -s, wx * (1 - c) + wy * s],
+                [s,  c, wy * (1 - c) - wx * s],
                 [0,  0, 1]
             ], dtype=np.float64)
-            self.entry.H = H0 @ R
+            self.entry.H = R @ H0
 
         elif self.active_tool == "scale":
             factor = max(0.001, 1 + delta.x() * 0.002)
+
+            # scale in world space around the object's visual center
             cx = self.entry.pixmap.width() / 2
             cy = self.entry.pixmap.height() / 2
+            img_center = np.array([[cx, cy, 1.0]])
+            world_center = (H0 @ img_center.T).T[0]
+            wx, wy = world_center[0] / world_center[2], world_center[1] / world_center[2]
+
             S = np.array([
-                [factor, 0, cx * (1 - factor)],
-                [0, factor, cy * (1 - factor)],
+                [factor, 0, wx * (1 - factor)],
+                [0, factor, wy * (1 - factor)],
                 [0, 0, 1]
             ], dtype=np.float64)
-            self.entry.H = H0 @ S
+            self.entry.H = S @ H0
 
         self.main._apply_all_transforms()
         self.main._sync_spinboxes_from_H(self.entry.H)
